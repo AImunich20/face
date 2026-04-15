@@ -104,6 +104,51 @@ def select_best_face(faces):
 
     return best_face
 
+def compute_iou(box1, box2):
+    x1, y1, x2, y2 = box1
+    x1b, y1b, x2b, y2b = box2
+
+    xi1 = max(x1, x1b)
+    yi1 = max(y1, y1b)
+    xi2 = min(x2, x2b)
+    yi2 = min(y2, y2b)
+
+    inter_area = max(0, xi2-xi1) * max(0, yi2-yi1)
+
+    box1_area = (x2-x1)*(y2-y1)
+    box2_area = (x2b-x1b)*(y2b-y1b)
+
+    union = box1_area + box2_area - inter_area
+
+    if union == 0:
+        return 0
+
+    return inter_area / union
+
+def filter_front_persons(persons, iou_thresh=0.4):
+    filtered = []
+
+    for p in persons:
+        px1, py1, px2, py2, _ = p
+
+        keep = True
+        for fp in filtered:
+            fx1, fy1, fx2, fy2, _ = fp
+
+            iou = compute_iou(
+                (px1, py1, px2, py2),
+                (fx1, fy1, fx2, fy2)
+            )
+
+            if iou > iou_thresh:
+                keep = False
+                break
+
+        if keep:
+            filtered.append(p)
+
+    return filtered
+
 # =========================
 # PROCESS IMAGE
 # =========================
@@ -115,6 +160,12 @@ def process_image(image_path):
         return
 
     persons = detect_persons(frame)
+
+    # 🔥 เรียงล่าง → บน
+    persons = sorted(persons, key=lambda x: x[3], reverse=True)
+
+    # 🔥 เอาเฉพาะคนหน้า
+    persons = filter_front_persons(persons)
 
     for (px1, py1, px2, py2, _) in persons:
         person_crop = frame[py1:py2, px1:px2]
