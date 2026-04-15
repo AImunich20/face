@@ -1,0 +1,23 @@
+[
+    {
+        "person_id": 0,
+        "person_confidence": 0.9444,
+        "name": "unknown",
+        "face_confidence": 0,
+        "image_path": "day_face_result/20260415_234720_person_0.jpg"
+    },
+    {
+        "person_id": 1,
+        "person_confidence": 0.8874,
+        "name": "unknown",
+        "face_confidence": 0,
+        "image_path": "day_face_result/20260415_234720_person_1.jpg"
+    },
+    {
+        "person_id": 2,
+        "person_confidence": 0.8488,
+        "name": "unknown",
+        "face_confidence": 0,
+        "image_path": "day_face_result/20260415_234720_person_2.jpg"
+    }
+]

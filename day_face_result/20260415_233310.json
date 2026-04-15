@@ -1,0 +1,23 @@
+[
+    {
+        "person_id": 0,
+        "person_confidence": 0.9062,
+        "name": "มิว",
+        "face_confidence": 0.9941,
+        "image_path": "day_face_result/20260415_233310_person_0.jpg"
+    },
+    {
+        "person_id": 1,
+        "person_confidence": 0.9035,
+        "name": "มิว",
+        "face_confidence": 0.9712,
+        "image_path": "day_face_result/20260415_233310_person_1.jpg"
+    },
+    {
+        "person_id": 2,
+        "person_confidence": 0.8403,
+        "name": "unknown",
+        "face_confidence": 0,
+        "image_path": "day_face_result/20260415_233310_person_2.jpg"
+    }
+]

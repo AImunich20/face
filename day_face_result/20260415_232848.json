@@ -1,0 +1,27 @@
+[
+    {
+        "person_id": 0,
+        "name": "มิว",
+        "confidence": 0.9921
+    },
+    {
+        "person_id": 1,
+        "name": "unknown",
+        "confidence": 0
+    },
+    {
+        "person_id": 2,
+        "name": "unknown",
+        "confidence": 0
+    },
+    {
+        "person_id": 3,
+        "name": "unknown",
+        "confidence": 0
+    },
+    {
+        "person_id": 4,
+        "name": "unknown",
+        "confidence": 0
+    }
+]

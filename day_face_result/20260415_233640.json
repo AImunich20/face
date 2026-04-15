@@ -1,0 +1,16 @@
+[
+    {
+        "person_id": 0,
+        "person_confidence": 0.9228,
+        "name": "มิว",
+        "face_confidence": 0.9945,
+        "image_path": "day_face_result/20260415_233640_person_0.jpg"
+    },
+    {
+        "person_id": 1,
+        "person_confidence": 0.8461,
+        "name": "unknown",
+        "face_confidence": 0,
+        "image_path": "day_face_result/20260415_233640_person_1.jpg"
+    }
+]
