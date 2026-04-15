@@ -2,14 +2,9 @@ import cv2
 import torch
 import torch.nn as nn
 from torchvision import transforms
-import mediapipe as mp
 from ultralytics import YOLO
+from retinaface import RetinaFace
 import json
-import os
-from datetime import datetime
-
-detected_results = []
-seen_names = set()
 
 # =========================
 # LOAD LABEL
@@ -18,7 +13,6 @@ with open("classes.json", "r", encoding="utf-8") as f:
     class_to_idx = json.load(f)
 
 idx_to_class = {v: k for k, v in class_to_idx.items()}
-
 
 # =========================
 # MODEL
@@ -44,50 +38,120 @@ class FaceModel(nn.Module):
     def forward(self,x):
         return self.net(x)
 
-
 model = FaceModel(len(class_to_idx))
 model.load_state_dict(torch.load("face_model.pth", map_location="cpu"))
 model.eval()
 
-
 # =========================
-# TOOLS
+# TRANSFORM
 # =========================
 transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)
 ])
 
+# =========================
+# YOLO PERSON
+# =========================
 yolo = YOLO("yolo11n.pt")
 
-mp_face = mp.solutions.face_detection
-face_detection = mp_face.FaceDetection(
-    model_selection=0,
-    min_detection_confidence=0.6
-)
-
-
-# =========================
-# DETECT PERSON (YOLO > 0.6)
-# =========================
 def detect_persons(frame):
-    results = yolo(
-        frame,
-        conf=0.8,
-        classes=[0]
-    )[0]
-
+    results = yolo(frame, conf=0.6, classes=[0])[0]
     persons = []
 
     for box in results.boxes:
-        cls = int(box.cls[0])
-        conf = float(box.conf[0])
-
-        if cls != 0 or conf < 0.6:
-            continue
-
         x1, y1, x2, y2 = map(int, box.xyxy[0])
+        conf = float(box.conf[0])
         persons.append((x1, y1, x2, y2, conf))
 
     return persons
 
+# =========================
+# RETINAFACE
+# =========================
+def detect_faces(frame):
+    faces = RetinaFace.detect_faces(frame)
+    results = []
+
+    if isinstance(faces, dict):
+        for k in faces:
+            face = faces[k]
+            x1, y1, x2, y2 = face["facial_area"]
+            conf = face["score"]
+
+            if conf > 0.7:
+                results.append((x1, y1, x2, y2, conf))
+
+    return results
+
+# =========================
+# SELECT BEST FACE
+# =========================
+def select_best_face(faces):
+    if len(faces) == 0:
+        return None
+
+    best_face = None
+    best_score = 0
+
+    for (x1, y1, x2, y2, conf) in faces:
+        area = (x2 - x1) * (y2 - y1)
+        score = conf * area
+
+        if score > best_score:
+            best_score = score
+            best_face = (x1, y1, x2, y2, conf)
+
+    return best_face
+
+# =========================
+# PROCESS IMAGE
+# =========================
+def process_image(image_path):
+    frame = cv2.imread(image_path)
+
+    if frame is None:
+        print("โหลดภาพไม่ได้")
+        return
+
+    persons = detect_persons(frame)
+
+    for (px1, py1, px2, py2, _) in persons:
+        person_crop = frame[py1:py2, px1:px2]
+
+        faces = detect_faces(person_crop)
+        best_face = select_best_face(faces)
+
+        if best_face is None:
+            continue
+
+        fx1, fy1, fx2, fy2, fconf = best_face
+
+        face_img = person_crop[fy1:fy2, fx1:fx2]
+
+        if face_img.shape[0] < 50 or face_img.shape[1] < 50:
+            continue
+
+        face_img = cv2.resize(face_img, (112,112))
+        face_tensor = transform(face_img).unsqueeze(0)
+
+        with torch.no_grad():
+            output = model(face_tensor)
+            pred = torch.argmax(output, dim=1).item()
+            name = idx_to_class[pred]
+
+        print("Detected:", name)
+
+        # draw
+        cv2.rectangle(frame, (px1+fx1, py1+fy1), (px1+fx2, py1+fy2), (0,255,0), 2)
+        cv2.putText(frame, name, (px1+fx1, py1+fy1-10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
+
+    cv2.imshow("Result", frame)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+# =========================
+# RUN
+# =========================
+process_image("1.jpg")
