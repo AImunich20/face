@@ -2,12 +2,9 @@ import cv2
 import torch
 import torch.nn as nn
 from torchvision import transforms
-import mediapipe as mp
 from ultralytics import YOLO
+from retinaface import RetinaFace
 import json
-import os
-from datetime import datetime
-
 
 # =========================
 # LOAD LABEL
@@ -16,7 +13,6 @@ with open("classes.json", "r", encoding="utf-8") as f:
     class_to_idx = json.load(f)
 
 idx_to_class = {v: k for k, v in class_to_idx.items()}
-
 
 # =========================
 # MODEL
@@ -42,198 +38,191 @@ class FaceModel(nn.Module):
     def forward(self,x):
         return self.net(x)
 
-
 model = FaceModel(len(class_to_idx))
 model.load_state_dict(torch.load("face_model.pth", map_location="cpu"))
 model.eval()
 
-
 # =========================
-# TOOLS
+# TRANSFORM
 # =========================
 transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)
 ])
 
+# =========================
+# YOLO PERSON
+# =========================
 yolo = YOLO("yolo11n.pt")
 
-mp_face = mp.solutions.face_detection
-face_detection = mp_face.FaceDetection(
-    model_selection=0,
-    min_detection_confidence=0.6
-)
-
-
-# =========================
-# DETECT PERSON (YOLO > 0.6)
-# =========================
 def detect_persons(frame):
-    results = yolo(
-        frame,
-        conf=0.8,
-        classes=[0]
-    )[0]
-
+    results = yolo(frame, conf=0.6, classes=[0])[0]
     persons = []
 
     for box in results.boxes:
-        cls = int(box.cls[0])
-        conf = float(box.conf[0])
-
-        if cls != 0 or conf < 0.6:
-            continue
-
         x1, y1, x2, y2 = map(int, box.xyxy[0])
+        conf = float(box.conf[0])
         persons.append((x1, y1, x2, y2, conf))
 
     return persons
 
+# =========================
+# RETINAFACE
+# =========================
+def detect_faces(frame):
+    faces = RetinaFace.detect_faces(frame)
+    results = []
+
+    if isinstance(faces, dict):
+        for k in faces:
+            face = faces[k]
+            x1, y1, x2, y2 = face["facial_area"]
+            conf = face["score"]
+
+            if conf > 0.7:
+                results.append((x1, y1, x2, y2, conf))
+
+    return results
 
 # =========================
-# DETECT BEST FACE
+# SELECT BEST FACE
 # =========================
-def detect_best_face(person_img, conf_threshold=0.8):
-    rgb_person = cv2.cvtColor(person_img, cv2.COLOR_BGR2RGB)
-    results_face = face_detection.process(rgb_person)
-
-    if not results_face.detections:
+def select_best_face(faces):
+    if len(faces) == 0:
         return None
-
-    ph, pw, _ = person_img.shape
 
     best_face = None
-    best_conf = 0
-    best_name = None
+    best_score = 0
 
-    for face_det in results_face.detections:
-        bbox = face_det.location_data.relative_bounding_box
+    for (x1, y1, x2, y2, conf) in faces:
+        area = (x2 - x1) * (y2 - y1)
+        score = conf * area
 
-        fx = int(bbox.xmin * pw)
-        fy = int(bbox.ymin * ph)
-        fw = int(bbox.width * pw)
-        fh = int(bbox.height * ph)
+        if score > best_score:
+            best_score = score
+            best_face = (x1, y1, x2, y2, conf)
 
-        fx, fy = max(0, fx), max(0, fy)
-        fx2, fy2 = min(pw, fx + fw), min(ph, fy + fh)
+    return best_face
 
-        face = person_img[fy:fy2, fx:fx2]
-        if face.size == 0:
-            continue
+def compute_iou(box1, box2):
+    x1, y1, x2, y2 = box1
+    x1b, y1b, x2b, y2b = box2
 
-        face_resized = cv2.resize(face, (112,112))
-        face_tensor = transform(face_resized).unsqueeze(0)
+    xi1 = max(x1, x1b)
+    yi1 = max(y1, y1b)
+    xi2 = min(x2, x2b)
+    yi2 = min(y2, y2b)
 
-        with torch.no_grad():
-            out = model(face_tensor)
-            probs = torch.softmax(out, dim=1)
-            conf_score, pred = torch.max(probs, 1)
+    inter_area = max(0, xi2-xi1) * max(0, yi2-yi1)
 
-        conf_score = conf_score.item()
-        pred = pred.item()
+    box1_area = (x2-x1)*(y2-y1)
+    box2_area = (x2b-x1b)*(y2b-y1b)
 
-        if conf_score < conf_threshold:
-            continue
+    union = box1_area + box2_area - inter_area
 
-        if conf_score > best_conf:
-            best_conf = conf_score
-            best_face = (fx, fy, fx2, fy2)
-            best_name = idx_to_class.get(pred, "Unknown")
+    if union == 0:
+        return 0
 
-    if best_face is None:
-        return None
+    return inter_area / union
 
-    return {
-        "box": best_face,
-        "name": best_name,
-        "confidence": best_conf
-    }
+def filter_front_persons(persons, iou_thresh=0.4):
+    filtered = []
 
+    for p in persons:
+        px1, py1, px2, py2, _ = p
 
-# =========================
-# MAIN PROCESS
-# =========================
-def process_image(image_path, save_dir="day_face_result"):
-    os.makedirs(save_dir, exist_ok=True)
+        keep = True
+        for fp in filtered:
+            fx1, fy1, fx2, fy2, _ = fp
 
+            iou = compute_iou(
+                (px1, py1, px2, py2),
+                (fx1, fy1, fx2, fy2)
+            )
+
+            if iou > iou_thresh:
+                keep = False
+                break
+
+        if keep:
+            filtered.append(p)
+
+    return filtered
+
+def process_image(image_path):
     frame = cv2.imread(image_path)
+
     if frame is None:
-        print("❌ อ่านภาพไม่ได้")
-        return
+        print("โหลดภาพไม่ได้")
+        return None
 
     persons = detect_persons(frame)
 
-    detected_results = []
+    # 🔥 เรียงล่าง → บน
+    persons = sorted(persons, key=lambda x: x[3], reverse=True)
 
-    now = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # 🔥 เอาเฉพาะคนหน้า
+    persons = filter_front_persons(persons)
 
-    for i, (x1, y1, x2, y2, p_conf) in enumerate(persons):
+    results = []
 
-        # ===== padding (ช่วยให้ detect หน้าแม่นขึ้น) =====
-        pad = 20
-        h, w, _ = frame.shape
-        x1 = max(0, x1 - pad)
-        y1 = max(0, y1 - pad)
-        x2 = min(w, x2 + pad)
-        y2 = min(h, y2 + pad)
+    for (px1, py1, px2, py2, _) in persons:
+        person_crop = frame[py1:py2, px1:px2]
 
-        person = frame[y1:y2, x1:x2]
+        faces = detect_faces(person_crop)
+        best_face = select_best_face(faces)
 
-        if person.size == 0:
+        if best_face is None:
             continue
 
-        draw_img = person.copy()
+        fx1, fy1, fx2, fy2, fconf = best_face
+        face_img = person_crop[fy1:fy2, fx1:fx2]
 
-        face_data = detect_best_face(person)
+        if face_img.shape[0] < 50 or face_img.shape[1] < 50:
+            continue
 
-        result = {
-            "person_id": i,
-            "person_confidence": round(p_conf, 4),
-            "name": "unknown",
-            "face_confidence": 0,
-            "image_path": ""
-        }
+        face_img = cv2.resize(face_img, (112,112))
+        face_tensor = transform(face_img).unsqueeze(0)
 
-        if face_data:
-            name = face_data["name"]
-            conf = face_data["confidence"]
+        with torch.no_grad():
+            output = model(face_tensor)
+            pred = torch.argmax(output, dim=1).item()
+            name = idx_to_class[pred]
 
-            result["name"] = name
-            result["face_confidence"] = round(conf, 4)
+        # global bbox
+        gx1, gy1 = px1 + fx1, py1 + fy1
+        gx2, gy2 = px1 + fx2, py1 + fy2
 
-            fx, fy, fx2, fy2 = face_data["box"]
+        results.append({
+            "name": name,
+            "face_conf": float(fconf),
+            "bbox": [int(gx1), int(gy1), int(gx2), int(gy2)]
+        })
 
-            cv2.putText(draw_img, f"{name} ({conf:.2f})",
-                        (fx, fy - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7, (0,255,0), 2)
+        # draw ลงภาพ
+        cv2.rectangle(frame, (gx1, gy1), (gx2, gy2), (0,255,0), 2)
+        cv2.putText(frame, name, (gx1, gy1-10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
 
-            cv2.rectangle(draw_img,
-                          (fx, fy),
-                          (fx2, fy2),
-                          (0,255,0), 2)
+    # =========================
+    # SAVE RESULT
+    # =========================
+    os.makedirs("day_face_result", exist_ok=True)
 
-        # กรอบคน
-        cv2.rectangle(draw_img,
-                      (0, 0),
-                      (draw_img.shape[1], draw_img.shape[0]),
-                      (255,0,0), 2)
+    base_name = os.path.splitext(os.path.basename(image_path))[0]
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # ===== SAVE =====
-        person_path = os.path.join(save_dir, f"{now}_person_{i}.jpg")
-        cv2.imwrite(person_path, draw_img)
+    # save image
+    img_path = f"day_face_result/{base_name}_{timestamp}.jpg"
+    cv2.imwrite(img_path, frame)
 
-        result["image_path"] = person_path
-        detected_results.append(result)
-
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
-    # ===== SAVE JSON =====
-    json_path = os.path.join(save_dir, f"{now}.json")
+    # save json
+    json_path = f"day_face_result/{base_name}_{timestamp}.json"
     with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(detected_results, f, indent=4, ensure_ascii=False)
+        json.dump(results, f, ensure_ascii=False, indent=4)
 
-    print("📊 ผลลัพธ์:", detected_results)
-
-    return detected_results, json_path
+    return {
+        "image_path": img_path,
+        "json_path": json_path,
+        "results": results
+    }s
