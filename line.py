@@ -12,10 +12,12 @@ from linebot.v3.exceptions import InvalidSignatureError
 
 import os, re, csv, shutil, requests
 from datetime import datetime
+import json
 
 from dataset import build_dataset_from_csv
 from picture_model import process
 from train import train_face_recognition
+from sheet import send_to_google_sheet
 
 # ===== CONFIG =====
 CHANNEL_ACCESS_TOKEN = "9pOzQ0MC0T1rl9ybqhyuy/Gck33gWh7fOAaKQOMDxKUa0sAeBNSqtB2EdCWjqIMc8NjMy3oF0CVJq6MR5J1gVL9RK3qhvVMslQG3UB+o1tbnZjKPNghtZKc3bE5uKYzt0EmOZ5/MK7rEfTiHgX7h/wdB04t89/1O/w1cDnyilFU="
@@ -238,10 +240,11 @@ def handle_image(event):
         f.write(res.content)
 
     print(f"[IMAGE] Processing image: {path}")
-    results,result_img_path = process(path)
+
+    results,result_img_path,result_json_path = process(path)
     print(f"[IMAGE] Detection results: {results}")
     print(f"[IMAGE] Result image path: {result_img_path}")
-
+    print(f"[IMAGE] Result JSON path: {result_json_path}")
     if results:
         msg = "พบบุคคล:\n- " + "\n- ".join(results)
         print(f"[IMAGE] Found {len(results)} persons: {results}")
@@ -256,6 +259,10 @@ def handle_image(event):
     print(f"[IMAGE] Sending result image URL: {full_url}")
 
     send_line_image(user_id, full_url)
+    with open(result_json_path, 'r', encoding='utf-8') as f:
+        local_data = json.load(f)
+        sheetst = send_to_google_sheet(local_data)
+    send_line_message(user_id, sheetst)
 
 # ================== VIDEO ==================
 @handler.add(MessageEvent, message=VideoMessageContent)

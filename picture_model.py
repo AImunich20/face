@@ -143,4 +143,4 @@ def process(image_path):
     print(f"✅ บันทึกรูปภาพ: {output_image_path}")
     print(f"✅ บันทึก JSON: {output_json_path}")
 
-    return display_names, output_image_path
+    return display_names, output_image_path, output_json_path
