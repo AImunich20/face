@@ -1,0 +1,17 @@
+{
+    "source_image": "day_face_pic/U071b6aeedfd9b8e85eb3b847b491e2f6.jpg",
+    "processed_at": "20260416_151651",
+    "results": [
+        {
+            "person_id": 0,
+            "face_bbox": [
+                113,
+                719,
+                667,
+                1274
+            ],
+            "label": "เเม่",
+            "confidence": 0.9137536947035416
+        }
+    ]
+}

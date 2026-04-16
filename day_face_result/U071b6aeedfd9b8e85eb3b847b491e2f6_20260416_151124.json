@@ -1,0 +1,28 @@
+{
+    "source_image": "day_face_pic/U071b6aeedfd9b8e85eb3b847b491e2f6.jpg",
+    "processed_at": "20260416_151124",
+    "results": [
+        {
+            "person_id": 0,
+            "face_bbox": [
+                666,
+                469,
+                795,
+                598
+            ],
+            "label": "ฟีนิกซ์",
+            "confidence": 0.6887633709225782
+        },
+        {
+            "person_id": 2,
+            "face_bbox": [
+                352,
+                108,
+                507,
+                263
+            ],
+            "label": "มิว",
+            "confidence": 0.7022122274486879
+        }
+    ]
+}

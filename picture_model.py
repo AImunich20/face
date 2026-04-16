@@ -1,228 +1,146 @@
 import cv2
-import torch
-import torch.nn as nn
-from torchvision import transforms
-from ultralytics import YOLO
-from retinaface import RetinaFace
+import face_recognition
+import pickle
+import numpy as np
+import os
 import json
+from datetime import datetime
+from ultralytics import YOLO
 
 # =========================
-# LOAD LABEL
+# CONFIG & LOAD DATASET
 # =========================
-with open("classes.json", "r", encoding="utf-8") as f:
-    class_to_idx = json.load(f)
+ENCODED_FILE = "trained_faces.pkl"
+YOLO_MODEL_PATH = "yolov8n.pt"
+CONF_THRES = 0.80
+CONF_PEOPLE_THRES = 0.50
+FACE_TOLERANCE = 0.5
 
-idx_to_class = {v: k for k, v in class_to_idx.items()}
+if not os.path.exists(ENCODED_FILE):
+    print("❌ ไม่พบไฟล์ trained_faces.pkl กรุณาเทรนก่อนครับ")
+    exit()
 
-# =========================
-# MODEL
-# =========================
-class FaceModel(nn.Module):
-    def __init__(self, num_classes):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(3,32,3,1,1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
+with open(ENCODED_FILE, "rb") as f:
+    known_face_encodings, known_face_names = pickle.load(f)
 
-            nn.Conv2d(32,64,3,1,1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
+yolo_model = YOLO(YOLO_MODEL_PATH)
 
-            nn.Flatten(),
-            nn.Linear(64*28*28,128),
-            nn.ReLU(),
-            nn.Linear(128,num_classes)
-        )
+def get_depth_score(box):
+    x1, y1, x2, y2 = box
+    return (y1 + y2) / 2
 
-    def forward(self,x):
-        return self.net(x)
-
-model = FaceModel(len(class_to_idx))
-model.load_state_dict(torch.load("face_model.pth", map_location="cpu"))
-model.eval()
+def remove_overlap(front_mask, back_mask):
+    return cv2.bitwise_and(back_mask, cv2.bitwise_not(front_mask))
 
 # =========================
-# TRANSFORM
+# PROCESS FUNCTION (WITH JSON SAVE)
 # =========================
-transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)
-])
-
-# =========================
-# YOLO PERSON
-# =========================
-yolo = YOLO("yolo11n.pt")
-
-def detect_persons(frame):
-    results = yolo(frame, conf=0.6, classes=[0])[0]
-    persons = []
-
-    for box in results.boxes:
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
-        conf = float(box.conf[0])
-        persons.append((x1, y1, x2, y2, conf))
-
-    return persons
-
-# =========================
-# RETINAFACE
-# =========================
-def detect_faces(frame):
-    faces = RetinaFace.detect_faces(frame)
-    results = []
-
-    if isinstance(faces, dict):
-        for k in faces:
-            face = faces[k]
-            x1, y1, x2, y2 = face["facial_area"]
-            conf = face["score"]
-
-            if conf > 0.7:
-                results.append((x1, y1, x2, y2, conf))
-
-    return results
-
-# =========================
-# SELECT BEST FACE
-# =========================
-def select_best_face(faces):
-    if len(faces) == 0:
-        return None
-
-    best_face = None
-    best_score = 0
-
-    for (x1, y1, x2, y2, conf) in faces:
-        area = (x2 - x1) * (y2 - y1)
-        score = conf * area
-
-        if score > best_score:
-            best_score = score
-            best_face = (x1, y1, x2, y2, conf)
-
-    return best_face
-
-def compute_iou(box1, box2):
-    x1, y1, x2, y2 = box1
-    x1b, y1b, x2b, y2b = box2
-
-    xi1 = max(x1, x1b)
-    yi1 = max(y1, y1b)
-    xi2 = min(x2, x2b)
-    yi2 = min(y2, y2b)
-
-    inter_area = max(0, xi2-xi1) * max(0, yi2-yi1)
-
-    box1_area = (x2-x1)*(y2-y1)
-    box2_area = (x2b-x1b)*(y2b-y1b)
-
-    union = box1_area + box2_area - inter_area
-
-    if union == 0:
-        return 0
-
-    return inter_area / union
-
-def filter_front_persons(persons, iou_thresh=0.4):
-    filtered = []
-
-    for p in persons:
-        px1, py1, px2, py2, _ = p
-
-        keep = True
-        for fp in filtered:
-            fx1, fy1, fx2, fy2, _ = fp
-
-            iou = compute_iou(
-                (px1, py1, px2, py2),
-                (fx1, fy1, fx2, fy2)
-            )
-
-            if iou > iou_thresh:
-                keep = False
-                break
-
-        if keep:
-            filtered.append(p)
-
-    return filtered
-
-def process_image(image_path):
-    frame = cv2.imread(image_path)
-
-    if frame is None:
-        print("โหลดภาพไม่ได้")
-        return None
-
-    persons = detect_persons(frame)
-
-    # 🔥 เรียงล่าง → บน
-    persons = sorted(persons, key=lambda x: x[3], reverse=True)
-
-    # 🔥 เอาเฉพาะคนหน้า
-    persons = filter_front_persons(persons)
-
-    results = []
-
-    for (px1, py1, px2, py2, _) in persons:
-        person_crop = frame[py1:py2, px1:px2]
-
-        faces = detect_faces(person_crop)
-        best_face = select_best_face(faces)
-
-        if best_face is None:
-            continue
-
-        fx1, fy1, fx2, fy2, fconf = best_face
-        face_img = person_crop[fy1:fy2, fx1:fx2]
-
-        if face_img.shape[0] < 50 or face_img.shape[1] < 50:
-            continue
-
-        face_img = cv2.resize(face_img, (112,112))
-        face_tensor = transform(face_img).unsqueeze(0)
-
-        with torch.no_grad():
-            output = model(face_tensor)
-            pred = torch.argmax(output, dim=1).item()
-            name = idx_to_class[pred]
-
-        # global bbox
-        gx1, gy1 = px1 + fx1, py1 + fy1
-        gx2, gy2 = px1 + fx2, py1 + fy2
-
-        results.append({
-            "name": name,
-            "face_conf": float(fconf),
-            "bbox": [int(gx1), int(gy1), int(gx2), int(gy2)]
-        })
-
-        # draw ลงภาพ
-        cv2.rectangle(frame, (gx1, gy1), (gx2, gy2), (0,255,0), 2)
-        cv2.putText(frame, name, (gx1, gy1-10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
-
-    # =========================
-    # SAVE RESULT
-    # =========================
+def process(image_path):
+    img = cv2.imread(image_path)
+    if img is None: return []
+    H, W = img.shape[:2]
+    
     os.makedirs("day_face_result", exist_ok=True)
-
     base_name = os.path.splitext(os.path.basename(image_path))[0]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    output_image_path = f"day_face_result/{base_name}_{timestamp}.jpg"
+    output_json_path = f"day_face_result/{base_name}_{timestamp}.json"
 
-    # save image
-    img_path = f"day_face_result/{base_name}_{timestamp}.jpg"
-    cv2.imwrite(img_path, frame)
+    results = yolo_model(img)[0]
+    persons = []
+    for r in results.boxes.data:
+        x1, y1, x2, y2, conf, cls = r
+        if int(cls) == 0 and float(conf) >= CONF_PEOPLE_THRES:
+            persons.append((int(x1), int(y1), int(x2), int(y2)))
 
-    # save json
-    json_path = f"day_face_result/{base_name}_{timestamp}.json"
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False, indent=4)
+    persons = sorted(persons, key=get_depth_score, reverse=True)
+    accumulated_front_mask = np.zeros((H, W), dtype=np.uint8)
+    all_detections = []
 
-    return {
-        "image_path": img_path,
-        "json_path": json_path,
-        "results": results
-    }s
+    for i, (x1, y1, x2, y2) in enumerate(persons):
+        mask = np.zeros((H, W), dtype=np.uint8)
+        mask[y1:y2, x1:x2] = 255
+        clean_mask = remove_overlap(accumulated_front_mask, mask)
+        accumulated_front_mask = cv2.bitwise_or(accumulated_front_mask, clean_mask)
+
+        person_crop = cv2.bitwise_and(img, img, mask=clean_mask)[y1:y2, x1:x2]
+        if person_crop.size == 0: continue
+
+        rgb_crop = cv2.cvtColor(person_crop, cv2.COLOR_BGR2RGB)
+        face_locations = face_recognition.face_locations(rgb_crop, model="hog")
+        face_encodings = face_recognition.face_encodings(rgb_crop, face_locations)
+
+        for j, (face_encoding, (top, right, bottom, left)) in enumerate(zip(face_encodings, face_locations)):
+            matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=FACE_TOLERANCE)
+            name = "Unknown"
+            
+            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+            if len(face_distances) > 0:
+                best_match_index = np.argmin(face_distances)
+                if matches[best_match_index]:
+                    name = known_face_names[best_match_index]
+                conf_score = 1 - face_distances[best_match_index]
+            else:
+                conf_score = 0
+
+            gx1, gy1 = x1 + left, y1 + top
+            gx2, gy2 = x1 + right, y1 + bottom
+
+            all_detections.append({
+                "person_id": i,
+                "face_bbox": [int(gx1), int(gy1), int(gx2), int(gy2)],
+                "label": name,
+                "confidence": float(conf_score)
+            })
+
+    # ===== SELECT BEST CANDIDATE =====
+    label_best = {}
+    for det in all_detections:
+        label = det["label"]
+        if label == "Unknown": continue 
+        if label not in label_best or det["confidence"] > label_best[label]["confidence"]:
+            label_best[label] = det
+
+    final_detections = list(label_best.values())
+
+    # ===== DRAW ON IMAGE =====
+    display_names = []
+    for idx, det in enumerate(final_detections, start=1):
+        b = det["face_bbox"]
+        label = det["label"]
+        confidence = det["confidence"]
+        
+        display_text = f"{idx}. {label}"
+        text = f"{idx}."
+        display_names.append(display_text)
+        
+        cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), (0, 255, 0), 2)
+        
+        cv2.putText(
+            img, 
+            f"{text} ({confidence:.2f})", 
+            (b[0], max(b[1] - 10, 20)),
+            cv2.FONT_HERSHEY_SIMPLEX, 
+            0.6, 
+            (0, 255, 0), 
+            2
+        )
+
+    # ===== SAVE FILES =====
+    cv2.imwrite(output_image_path, img)
+
+    output_data = {
+        "source_image": image_path,
+        "processed_at": timestamp,
+        "results": final_detections,
+        "display_list": display_names
+    }
+
+    with open(output_json_path, "w", encoding="utf-8") as f:
+        json.dump(output_data, f, indent=4, ensure_ascii=False)
+
+    print(f"✅ บันทึกรูปภาพ: {output_image_path}")
+    print(f"✅ บันทึก JSON: {output_json_path}")
+
+    return display_names, output_image_path

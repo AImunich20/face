@@ -1,0 +1,56 @@
+{
+    "source_image": "day_face_pic/U071b6aeedfd9b8e85eb3b847b491e2f6.jpg",
+    "processed_at": "20260416_152630",
+    "results": [
+        {
+            "person_id": 0,
+            "face_bbox": [
+                995,
+                614,
+                1057,
+                676
+            ],
+            "label": "ฟีนิกซ์",
+            "confidence": 0.6918941904104696
+        },
+        {
+            "person_id": 3,
+            "face_bbox": [
+                982,
+                423,
+                1044,
+                485
+            ],
+            "label": "เเม่",
+            "confidence": 0.6719489852421949
+        },
+        {
+            "person_id": 7,
+            "face_bbox": [
+                798,
+                320,
+                860,
+                382
+            ],
+            "label": "มิว",
+            "confidence": 0.6510699720517279
+        },
+        {
+            "person_id": 10,
+            "face_bbox": [
+                951,
+                297,
+                1014,
+                359
+            ],
+            "label": "ป๊า",
+            "confidence": 0.6855616750317224
+        }
+    ],
+    "display_list": [
+        "1.",
+        "2.",
+        "3.",
+        "4."
+    ]
+}

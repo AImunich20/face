@@ -1,0 +1,122 @@
+import cv2
+import face_recognition
+import pickle
+import numpy as np
+import os
+import json
+from datetime import datetime
+from ultralytics import YOLO
+
+# =========================
+# CONFIG & LOAD DATASET
+# =========================
+ENCODED_FILE = "trained_faces.pkl"
+YOLO_MODEL_PATH = "yolov8n.pt"
+CONF_THRES = 0.80
+FACE_TOLERANCE = 0.5  # ยิ่งน้อยยิ่งแม่น/เข้มงวด
+
+if not os.path.exists(ENCODED_FILE):
+    print("❌ ไม่พบไฟล์ trained_faces.pkl กรุณาเทรนก่อนครับ")
+    exit()
+
+with open(ENCODED_FILE, "rb") as f:
+    known_face_encodings, known_face_names = pickle.load(f)
+
+yolo_model = YOLO(YOLO_MODEL_PATH)
+
+def get_depth_score(box):
+    x1, y1, x2, y2 = box
+    return (y1 + y2) / 2  # คนที่อยู่ล่างภาพ = ใกล้กล้อง
+
+def remove_overlap(front_mask, back_mask):
+    return cv2.bitwise_and(back_mask, cv2.bitwise_not(front_mask))
+
+# =========================
+# PROCESS FUNCTION (INTEGRATED)
+# =========================
+def process(image_path):
+    img = cv2.imread(image_path)
+    if img is None: return []
+    H, W = img.shape[:2]
+    
+    os.makedirs("day_face_result", exist_ok=True)
+    base_name = os.path.splitext(os.path.basename(image_path))[0]
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_image_path = f"day_face_result/{base_name}_{timestamp}.jpg"
+
+    # 1. YOLO Detect Persons
+    results = yolo_model(img)[0]
+    persons = []
+    for r in results.boxes.data:
+        x1, y1, x2, y2, conf, cls = r
+        if int(cls) == 0 and float(conf) >= CONF_THRES:
+            persons.append((int(x1), int(y1), int(x2), int(y2)))
+
+    # เรียงคนจากหน้าไปหลัง
+    persons = sorted(persons, key=get_depth_score, reverse=True)
+    accumulated_front_mask = np.zeros((H, W), dtype=np.uint8)
+    all_detections = []
+
+    # 2. Loop แต่ละคนเพื่อหาใบหน้า
+    for i, (x1, y1, x2, y2) in enumerate(persons):
+        mask = np.zeros((H, W), dtype=np.uint8)
+        mask[y1:y2, x1:x2] = 255
+        clean_mask = remove_overlap(accumulated_front_mask, mask)
+        accumulated_front_mask = cv2.bitwise_or(accumulated_front_mask, clean_mask)
+
+        person_crop = cv2.bitwise_and(img, img, mask=clean_mask)[y1:y2, x1:x2]
+        if person_crop.size == 0: continue
+
+        # เปลี่ยนมาใช้ face_recognition ตรวจจับใน Crop ของ Person
+        rgb_crop = cv2.cvtColor(person_crop, cv2.COLOR_BGR2RGB)
+        face_locations = face_recognition.face_locations(rgb_crop, model="hog") # หรือ "cnn" ถ้ามี GPU
+        face_encodings = face_recognition.face_encodings(rgb_crop, face_locations)
+
+        for j, (face_encoding, (top, right, bottom, left)) in enumerate(zip(face_encodings, face_locations)):
+            # เปรียบเทียบกับ Dataset
+            matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=FACE_TOLERANCE)
+            name = "Unknown"
+            
+            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+            if len(face_distances) > 0:
+                best_match_index = np.argmin(face_distances)
+                if matches[best_match_index]:
+                    name = known_face_names[best_match_index]
+                conf_score = 1 - face_distances[best_match_index] # แปลง distance เป็น confidence คร่าวๆ
+            else:
+                conf_score = 0
+
+            # Map กลับไปที่พิกัดภาพใหญ่
+            gx1, gy1 = x1 + left, y1 + top
+            gx2, gy2 = x1 + right, y1 + bottom
+
+            all_detections.append({
+                "person_id": i,
+                "face_bbox": [gx1, gy1, gx2, gy2],
+                "label": name,
+                "confidence": float(conf_score)
+            })
+
+    # 3. เลือกคนที่มี Confidence สูงสุดในแต่ละ Label (กันการ Detect ซ้ำ)
+    label_best = {}
+    for det in all_detections:
+        label = det["label"]
+        if label == "Unknown": continue # ไม่นับรวม Unknown ในการทำ Best Candidate
+        if label not in label_best or det["confidence"] > label_best[label]["confidence"]:
+            label_best[label] = det
+
+    final_detections = list(label_best.values())
+
+    # 4. วาดผลและ Save
+    for det in final_detections:
+        b = det["face_bbox"]
+        cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), (0, 255, 0), 2)
+        cv2.putText(img, f"{det['label']} {det['confidence']:.2f}", (b[0], b[1]-10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+    cv2.imwrite(output_image_path, img)
+    return [det["label"] for det in final_detections]
+
+# ทดสอบรัน
+names = process("1.jpg")
+print(f"พบคนในภาพ: {names}")
